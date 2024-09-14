@@ -9,14 +9,48 @@
 */
 bool do_system(const char *cmd)
 {
+    if (cmd == NULL) {
+        fprintf(stderr, "Error: Command is NULL.\n");
+        return false;
+    }
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    // Execute the command using system()
+    int ret = system(cmd);
 
+    if (ret == -1) {
+        // system() failed to execute
+        perror("system");
+        return false;
+    } else {
+        // Check how the command terminated
+        if (WIFEXITED(ret)) {
+            int exit_status = WEXITSTATUS(ret);
+            if (exit_status == 0) {
+                // Command executed successfully
+                return true;
+            } else {
+                // Command executed but returned a non-zero exit status
+                fprintf(stderr, "Command exited with non-zero status: %d\n", exit_status);
+                return false;
+            }
+        } else if (WIFSIGNALED(ret)) {
+            // Command was terminated by a signal
+            int term_signal = WTERMSIG(ret);
+            fprintf(stderr, "Command was terminated by signal: %d\n", term_signal);
+            return false;
+        } else {
+            // Other cases
+            fprintf(stderr, "Command did not terminate normally.\n");
+            return false;
+        }
+    }
+}
+
+// Function to check if a path is absolute
+bool is_absolute_path(const char *path) {
+    if (path == NULL || path[0] != '/') {
+        return false;
+    }
     return true;
 }
 
@@ -38,29 +72,77 @@ bool do_exec(int count, ...)
 {
     va_list args;
     va_start(args, count);
-    char * command[count+1];
-    int i;
-    for(i=0; i<count; i++)
+    
+    // Allocate memory for command arguments
+    // VLAs are not supported in C90 or C++, so we use malloc instead
+    char **command = malloc((count + 1) * sizeof(char *));
+    if (command == NULL) {
+        perror("malloc");
+        va_end(args);
+        return false;
+    }
+
+    // Collect the command and its arguments
+    for(int i = 0; i < count; i++)
     {
         command[i] = va_arg(args, char *);
     }
-    command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
+    command[count] = NULL; // Null-terminate the argument list
 
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
+    // Verify that command[0] is an absolute path
+    if (!is_absolute_path(command[0])) {
+        fprintf(stderr, "Error: Command must be an absolute path.\n");
+        free(command);
+        va_end(args);
+        return false;
+    }
 
+    pid_t pid = fork();
+    if (pid == -1)
+    {
+        perror("fork");
+        free(command);
+        va_end(args);
+        return false;
+    }
+    else if (pid == 0)
+    {
+        // Child process
+        execv(command[0], command);
+        // If execv returns, an error occurred
+        perror("execv");
+        _exit(EXIT_FAILURE); // Use _exit to terminate immediately
+    }
+    else
+    {
+        // Parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1)
+        {
+            perror("waitpid");
+            free(command);
+            va_end(args);
+            return false;
+        }
+
+        // Check if the child terminated normally and exited with status 0
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        {
+            free(command);
+            va_end(args);
+            return true;
+        }
+        else
+        {
+            free(command);
+            va_end(args);
+            return false;
+        }
+    }
+
+    // Cleanup (unreachable code, but good practice)
+    free(command);
     va_end(args);
-
     return true;
 }
 
@@ -73,27 +155,105 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 {
     va_list args;
     va_start(args, count);
-    char * command[count+1];
-    int i;
-    for(i=0; i<count; i++)
-    {
+
+    // Allocate memory for command arguments (+1 for NULL terminator)
+    // VLAs are not supported in C90 or C++, so we use malloc instead
+    char **command = malloc((count + 1) * sizeof(char *));
+    if (command == NULL) {
+        perror("malloc");
+        va_end(args);
+        return false;
+    }
+
+    // Collect the command and its arguments
+    for(int i = 0; i < count; i++) {
         command[i] = va_arg(args, char *);
     }
-    command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
+    command[count] = NULL; // Null-terminate the argument list
 
+    // Verify that command[0] is an absolute path
+    if (!is_absolute_path(command[0])) {
+        fprintf(stderr, "Error: Command must be an absolute path.\n");
+        free(command);
+        va_end(args);
+        return false;
+    }
 
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
+    // Fork a child process
+    pid_t pid = fork();
+    if (pid == -1) {
+        // Fork failed
+        perror("fork");
+        free(command);
+        va_end(args);
+        return false;
+    }
+    else if (pid == 0) {
+        // Child process
 
+        // Open the output file with write-only access, create if it doesn't exist, truncate if it does
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd == -1) {
+            perror("open");
+            _exit(EXIT_FAILURE); // Use _exit to terminate immediately
+        }
+
+        // Redirect stdout to the output file
+        if (dup2(fd, STDOUT_FILENO) == -1) {
+            perror("dup2");
+            close(fd);
+            _exit(EXIT_FAILURE);
+        }
+
+        // Close the original file descriptor as it's no longer needed
+        if (close(fd) == -1) {
+            perror("close");
+            _exit(EXIT_FAILURE);
+        }
+
+        // Execute the command
+        execv(command[0], command);
+
+        // If execv returns, an error occurred
+        perror("execv");
+        _exit(EXIT_FAILURE);
+    }
+    else {
+        // Parent process
+
+        int status;
+        pid_t wait_result = waitpid(pid, &status, 0);
+        if (wait_result == -1) {
+            // waitpid failed
+            perror("waitpid");
+            free(command);
+            va_end(args);
+            return false;
+        }
+
+        // Check if the child terminated normally and exited with status 0
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            // Success
+            free(command);
+            va_end(args);
+            return true;
+        }
+        else {
+            // Child exited with an error or did not terminate normally
+            if (WIFEXITED(status)) {
+                fprintf(stderr, "Command exited, status: %d\n", WEXITSTATUS(status));
+            }
+            else if (WIFSIGNALED(status)) {
+                fprintf(stderr, "Command terminated, signal: %d\n", WTERMSIG(status));
+            }
+            free(command);
+            va_end(args);
+            return false;
+        }
+    }
+
+    // Cleanup (just in case)
+    free(command);
     va_end(args);
-
-    return true;
+    return false;
 }
