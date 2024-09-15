@@ -27,7 +27,7 @@ fi
 echo "Booting the kernel"
 # See trick at https://superuser.com/a/1412150 to route serial port output to file
 qemu-system-aarch64 \
-        -m 256M \
+        -m 1024M \
         -M virt \
         -cpu cortex-a53 \
         -nographic \
